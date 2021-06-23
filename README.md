@@ -1,11 +1,40 @@
 # RUA
-Automating Augmentation Through Random Unidimensional Search.
+Automating Augmentation Through Random Unidimensional Search. To get more detail about the approach and results, please refer to our [paper](https://arxiv.org/pdf/2106.08756.pdf)
 
 
 ## Pre-requisites
-* TensorFlow == 2.3.0
-* PyTorch == 1.6.0
-* FastEstimator == 1.1.1
+* Python >= 3.6
+* TensorFlow == 2.4.1
+* PyTorch == 1.7.1
+
+## Installation:
+You can install the nightly version of fastestimator along with the above mentioned dependencies.
+
+* Nightly (Linux/Mac):
+    ``` bash
+    $ pip install fastestimator-nightly
+    ```
+
+* Nightly (Windows):
+
+    First download zip file [here](https://github.com/fastestimator/fastestimator/archive/master.zip)
+    ``` bash
+    $ pip install fastestimator-master.zip
+    ```
+
+Detailed installation instructions can be referred from [here](https://github.com/fastestimator/fastestimator)
+
+## Docker Hub
+Docker containers create isolated virtual environments that share resources with a host machine. Docker provides an easy way to set up a FastEstimator environment. You can simply pull our image from [Docker Hub](https://hub.docker.com/r/fastestimator/fastestimator/tags) and get started:
+* Nighly:
+    * GPU:
+        ``` bash
+        docker pull fastestimator/fastestimator:nightly-gpu
+        ```
+    * CPU:
+        ``` bash
+        docker pull fastestimator/fastestimator:nightly-cpu
+        ```
 
 
 ### Run PyramidNet on Cifar10:
@@ -48,29 +77,29 @@ fastestimator train wrn2810_cifar100_final.py --level 23
 
 
 ### Run WRN-28-2 on SVHN_Cropped:
-First download the cropped [dataset](http://ufldl.stanford.edu/housenumbers/), then organize the dataset like this:
-```
-- /data/SVHN_Cropped
-    |- 0
-        |- 0.png
-        |- 00.png
-    |- 1
-    |- 2
-    |- 3
-    |- 4
-    |- 5
-    |- 6
-    |- 7
-    |- 8
-    |- 9
-```
+Here, we are using SVHN Cropped digits dataset to get MNIST-like 32-by-32 images. You can refer to [dataset](http://ufldl.stanford.edu/housenumbers/) for more information.
+
 * RUA search:
 ```
 cd wrn282_svhn/rua
-python wrn282_svhn_rua.py  # might need to change the data_dir in the file
+python wrn282_svhn_rua.py
 ```
 * Test on Cifar100 after finding optimal augmentation level:
 ```
 cd  wrn282_svhn/final
-fastestimator train wrn282_svhn_rda_final_best.py --level 26 --data_dir /data/SVHN_Cropped
+fastestimator train wrn282_svhn_final.py --level 26
+```
+
+
+## Citation
+Please cite RUA in your publications if it helps your research:
+```
+@misc{dong2021automating,
+      title={Automating Augmentation Through Random Unidimensional Search},
+      author={Xiaomeng Dong and Michael Potter and Gaurav Kumar and Yun-Chan Tsai and V. Ratna Saripalli},
+      year={2021},
+      eprint={2106.08756},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
 ```
