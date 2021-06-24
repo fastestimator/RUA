@@ -1,23 +1,24 @@
 import math
-import os
 import random
 import tempfile
 
-import fastestimator as fe
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image, ImageEnhance, ImageOps, ImageTransform
+
+import fastestimator as fe
+from fastestimator.dataset.data.svhn_cropped import load_data
 from fastestimator.op.numpyop import NumpyOp
-from fastestimator.op.numpyop.meta import OneOf, Sometimes
+from fastestimator.op.numpyop.meta import OneOf
 from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout, ReadImage
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
 from fastestimator.schedule import cosine_decay
 from fastestimator.trace.adapt import LRScheduler
-from fastestimator.trace.io import BestModelSaver, RestoreWizard
+from fastestimator.trace.io import BestModelSaver
 from fastestimator.trace.metric import Accuracy
-from PIL import Image, ImageEnhance, ImageOps, ImageTransform
 
 
 class BasicBlock(nn.Module):
@@ -288,10 +289,9 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
-def get_estimator(level, data_dir, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200):
+def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200):
     print("trying level {}".format(level))
-    train_ds = fe.dataset.LabeledDirDataset(os.path.join(data_dir, "train"))
-    test_ds = fe.dataset.LabeledDirDataset(os.path.join(data_dir, "test"))
+    train_ds, test_ds = load_data()
     aug_options = [
         Rotate(level=level, inputs="x", outputs="x", mode="train"),
         Identity(level=level, inputs="x", outputs="x", mode="train"),
@@ -314,7 +314,7 @@ def get_estimator(level, data_dir, save_dir=tempfile.mkdtemp(), batch_size=128, 
         train_data=train_ds,
         eval_data=test_ds,
         batch_size=batch_size,
-        ops=[ReadImage(inputs="x", outputs="x")] + [OneOf(*aug_options) for _ in range(N)] + [
+        ops=[OneOf(*aug_options) for _ in range(N)] + [
             Scale(inputs="x", outputs="x"),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")
@@ -335,8 +335,8 @@ def get_estimator(level, data_dir, save_dir=tempfile.mkdtemp(), batch_size=128, 
     return estimator
 
 
-def evaluate_result(level, data_dir="/data/SVHN_Cropped", epochs=200):
-    est = get_estimator(level=level, data_dir=data_dir, epochs=epochs)
+def evaluate_result(level, epochs=200):
+    est = get_estimator(level=level, epochs=epochs)
     hist = est.fit(summary="exp")
     best_acc = float(hist.history["eval"]["max_accuracy"][epochs * 573])
     return best_acc
