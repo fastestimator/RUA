@@ -451,7 +451,6 @@ def get_estimator(level, data_dir, batch_per_gpu=256, epochs=180, save_dir=tempf
             SmallestMaxSize(max_size=256, image_in="x", image_out="x", interpolation=cv2.INTER_CUBIC, mode="eval"),
             CenterCrop(height=224, width=224, image_in="x", image_out="x", mode="eval")
         ])
-    pipeline.benchmark()
     # step 2
     init_lr = 0.1 * batch_size / 256
     model = fe.build(model_fn=resnet50,
@@ -486,7 +485,7 @@ def evaluate_result(data_dir, level):
     est = get_estimator(data_dir=data_dir, level=level)
     hist = est.fit(summary="exp", warmup=False)
     best_acc = float(max(hist.history["eval"]["max_accuracy"].values()))
-    print("Evaluated level{}, results:{}".format(level, best_acc))
+    print("Evaluated level {}, results:{}".format(level, best_acc))
     return best_acc
 
 

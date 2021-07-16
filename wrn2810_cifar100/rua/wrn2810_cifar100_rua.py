@@ -119,11 +119,6 @@ class Rotate(NumpyOp):
         return np.copy(np.asarray(im))
 
 
-class Identity(NumpyOp):
-    def __init__(self, level, inputs=None, outputs=None, mode=None):
-        super().__init__(inputs=inputs, outputs=outputs, mode=mode)
-
-
 class AutoContrast(NumpyOp):
     def __init__(self, level, inputs=None, outputs=None, mode=None):
         super().__init__(inputs=inputs, outputs=outputs, mode=mode)
@@ -285,16 +280,25 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
+def get_probability(N, P):
+    """
+    N: number of augmentation
+    P: the probability of having at least 1 augmentation
+
+    return: the N needed
+    """
+    return 1 - math.exp(math.log(1 - P) / N)
+
+
 def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()):
     print("trying level {}".format(level))
     # step 1: prepare dataset
-    (x_train, y_train), (x_eval, y_eval) = tf.keras.datasets.cifar100.load_data()
+    (x_train, y_train), (_, _) = tf.keras.datasets.cifar100.load_data()
     x_train, x_eval, y_train, y_eval = train_test_split(x_train, y_train, test_size=0.1, random_state=24, stratify=y_train)
     train_data = fe.dataset.NumpyDataset({"x": x_train, "y": y_train})
     eval_data = fe.dataset.NumpyDataset({"x": x_eval, "y": y_eval})
     aug_options = [
         Rotate(level=level, inputs="x", outputs="x", mode="train"),
-        Identity(level=level, inputs="x", outputs="x", mode="train"),
         AutoContrast(level=level, inputs="x", outputs="x", mode="train"),
         Equalize(level=level, inputs="x", outputs="x", mode="train"),
         Posterize(level=level, inputs="x", outputs="x", mode="train"),
@@ -308,8 +312,7 @@ def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()
         TranslateX(level=level, inputs="x", outputs="x", mode="train"),
         TranslateY(level=level, inputs="x", outputs="x", mode="train")
     ]
-    max_N = min(5, len(aug_options))
-    N = min(max_N, math.ceil(level / 30 * max_N))
+    aug_ops = [Sometimes(op, prob=get_probability(len(aug_options), 0.99)) for op in aug_options]
     pipeline = fe.Pipeline(
         train_data=train_data,
         eval_data=eval_data,
@@ -318,7 +321,7 @@ def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()
             PadIfNeeded(min_height=40, min_width=40, image_in="x", image_out="x", mode="train"),
             RandomCrop(32, 32, image_in="x", image_out="x", mode="train"),
             Sometimes(HorizontalFlip(image_in="x", image_out="x", mode="train"))
-        ] + [OneOf(*aug_options) for _ in range(N)] + [
+        ] + aug_ops + [
             Normalize(inputs="x", outputs="x", mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616)),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")
@@ -346,8 +349,9 @@ def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()
 
 def evaluate_result(level, epochs=200):
     est = get_estimator(level=level, epochs=epochs)
-    hist = est.fit(summary="exp")
-    best_acc = float(hist.history["eval"]["max_accuracy"][epochs * 352])
+    hist = est.fit(summary="exp", warmup=False)
+    best_acc = float(max(hist.history["eval"]["max_accuracy"].values()))
+    print("Evaluated level {}, results:{}".format(level, best_acc))
     return best_acc
 
 
@@ -389,6 +393,6 @@ def gss(a, b, total_trial=10):
     return max_value_keys[0], results[max_value_keys[0]]
 
 
-if __name__ == "__main__":
+def fastestimator_run():
     best_level, best_acc = gss(a=1, b=30, total_trial=7)
     print("best level is {}, best accuracy is {}".format(best_level, best_acc))

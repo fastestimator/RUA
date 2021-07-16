@@ -2,16 +2,14 @@ import math
 import random
 import tempfile
 
+import fastestimator as fe
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image, ImageEnhance, ImageOps, ImageTransform
-
-import fastestimator as fe
 from fastestimator.dataset.data.svhn_cropped import load_data
 from fastestimator.op.numpyop import NumpyOp
-from fastestimator.op.numpyop.meta import OneOf
+from fastestimator.op.numpyop.meta import Sometimes
 from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout, ReadImage
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
@@ -19,6 +17,7 @@ from fastestimator.schedule import cosine_decay
 from fastestimator.trace.adapt import LRScheduler
 from fastestimator.trace.io import BestModelSaver
 from fastestimator.trace.metric import Accuracy
+from PIL import Image, ImageEnhance, ImageOps, ImageTransform
 
 
 class BasicBlock(nn.Module):
@@ -289,12 +288,22 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
+def get_probability(N, P):
+    """
+    N: number of augmentation
+    P: the probability of having at least 1 augmentation
+
+    return: the N needed
+    """
+    return 1 - math.exp(math.log(1 - P) / N)
+
+
 def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200):
     print("trying level {}".format(level))
-    train_ds, test_ds = load_data()
+    train_ds, _ = load_data()
+    eval_ds = train_ds.split(0.1, seed=24)
     aug_options = [
         Rotate(level=level, inputs="x", outputs="x", mode="train"),
-        Identity(level=level, inputs="x", outputs="x", mode="train"),
         AutoContrast(level=level, inputs="x", outputs="x", mode="train"),
         Equalize(level=level, inputs="x", outputs="x", mode="train"),
         Posterize(level=level, inputs="x", outputs="x", mode="train"),
@@ -308,13 +317,12 @@ def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200
         TranslateX(level=level, inputs="x", outputs="x", mode="train"),
         TranslateY(level=level, inputs="x", outputs="x", mode="train")
     ]
-    max_N = min(5, len(aug_options))
-    N = min(max_N, math.ceil(level / 30 * max_N))
+    aug_ops = [Sometimes(op, prob=get_probability(len(aug_options), 0.99)) for op in aug_options]
     pipeline = fe.Pipeline(
         train_data=train_ds,
-        eval_data=test_ds,
+        eval_data=eval_ds,
         batch_size=batch_size,
-        ops=[OneOf(*aug_options) for _ in range(N)] + [
+        ops=aug_ops + [
             Scale(inputs="x", outputs="x"),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")
@@ -337,8 +345,9 @@ def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200
 
 def evaluate_result(level, epochs=200):
     est = get_estimator(level=level, epochs=epochs)
-    hist = est.fit(summary="exp")
-    best_acc = float(hist.history["eval"]["max_accuracy"][epochs * 573])
+    hist = est.fit(summary="exp", warmup=False)
+    best_acc = float(max(hist.history["eval"]["max_accuracy"].values()))
+    print("Evaluated level {}, results:{}".format(level, best_acc))
     return best_acc
 
 
@@ -380,6 +389,6 @@ def gss(a, b, total_trial=10):
     return max_value_keys[0], results[max_value_keys[0]]
 
 
-if __name__ == "__main__":
+def fastestimator_run():
     best_level, best_acc = gss(a=1, b=30, total_trial=7)
     print("best level is {}, best accuracy is {}".format(best_level, best_acc))
