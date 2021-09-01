@@ -1,5 +1,5 @@
 # RUA
-Automating Augmentation Through Random Unidimensional Search.
+Automating Augmentation Through Random Unidimensional Search. To get more detail about the approach and results, please refer to our [paper](https://arxiv.org/pdf/2106.08756.pdf)
 
 
 ## Pre-requisites
