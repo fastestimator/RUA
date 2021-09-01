@@ -4,12 +4,9 @@ import random
 import tempfile
 
 import cv2
+import fastestimator as fe
 import numpy as np
 import tensorflow as tf
-from PIL import Image, ImageEnhance, ImageOps, ImageTransform
-from tensorflow.keras import layers
-
-import fastestimator as fe
 from fastestimator.dataset import LabeledDirDataset
 from fastestimator.op.numpyop import NumpyOp
 from fastestimator.op.numpyop.meta import OneOf, Sometimes
@@ -24,6 +21,8 @@ from fastestimator.trace.adapt import LRScheduler
 from fastestimator.trace.io import BestModelSaver, RestoreWizard
 from fastestimator.trace.metric import Accuracy
 from fastestimator.util import get_num_devices
+from PIL import Image, ImageEnhance, ImageOps, ImageTransform
+from tensorflow.keras import layers
 
 
 class Rotate(NumpyOp):
@@ -453,8 +452,7 @@ def get_estimator(data_dir,
         ] + rua_ops + [
             SmallestMaxSize(max_size=256, image_in="x", image_out="x", interpolation=cv2.INTER_CUBIC, mode="eval"),
             CenterCrop(height=224, width=224, image_in="x", image_out="x", mode="eval")
-        ],
-        num_process=64)
+        ])
     # step 2
     init_lr = 0.1 * batch_size / 256
     model = fe.build(model_fn=resnet50,
