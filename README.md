@@ -3,21 +3,21 @@ Automating Augmentation Through Random Unidimensional Search.
 
 
 ## Pre-requisites
-* TensorFlow == 2.3.0
-* PyTorch == 1.6.0
-* FastEstimator == 1.1.1
+* TensorFlow == 2.4.1
+* PyTorch == 1.7.1
+* FastEstimator == 1.2.0
 
 
 ### Run PyramidNet on Cifar10:
 * RUA search:
 ```
 cd pyramidnet_cifar10/rua
-python pyramidnet_cifar10_rua.py
+fastestimator run pyramidnet_cifar10_rua.py
 ```
-* Test on Cifar10 after finding optimal augmentation level:
+* After finding optimal augmentation level:
 ```
 cd pyramidnet_cifar10/final
-fastestimator train pyramidnet_cifar10_final.py --level 24
+fastestimator train pyramidnet_cifar10_final.py
 ```
 
 
@@ -25,12 +25,12 @@ fastestimator train pyramidnet_cifar10_final.py --level 24
 * RUA search:
 ```
 cd wrn2810_cifar10/rua
-python wrn2810_cifar10_rua.py
+fastestimator run wrn2810_cifar10_rua.py
 ```
-* Test on Cifar10 after finding optimal augmentation level:
+* After finding optimal augmentation level:
 ```
 cd wrn2810_cifar10/final
-fastestimator train wrn2810_cifar10_final.py --level 18
+fastestimator train wrn2810_cifar10_final.py
 ```
 
 
@@ -38,39 +38,53 @@ fastestimator train wrn2810_cifar10_final.py --level 18
 * RUA search:
 ```
 cd wrn2810_cifar100/rua
-python wrn2810_cifar100_rua.py
+fastestimator run wrn2810_cifar100_rua.py
 ```
-* Test on Cifar100 after finding optimal augmentation level:
+* After finding optimal augmentation level:
 ```
 cd wrn2810_cifar100/final
-fastestimator train wrn2810_cifar100_final.py --level 23
+fastestimator train wrn2810_cifar100_final.py
 ```
 
 
 ### Run WRN-28-2 on SVHN_Cropped:
-First download the cropped [dataset](http://ufldl.stanford.edu/housenumbers/), then organize the dataset like this:
-```
-- /data/SVHN_Cropped
-    |- 0
-        |- 0.png
-        |- 00.png
-    |- 1
-    |- 2
-    |- 3
-    |- 4
-    |- 5
-    |- 6
-    |- 7
-    |- 8
-    |- 9
-```
 * RUA search:
 ```
 cd wrn282_svhn/rua
-python wrn282_svhn_rua.py  # might need to change the data_dir in the file
+fastestimator run wrn282_svhn_rua.py
 ```
-* Test on Cifar100 after finding optimal augmentation level:
+* After finding optimal augmentation level:
 ```
 cd  wrn282_svhn/final
-fastestimator train wrn282_svhn_rda_final_best.py --level 26 --data_dir /data/SVHN_Cropped
+fastestimator train wrn282_svhn_final.py
+```
+
+### Run Resnet50 on ImageNet:
+First please download the ImageNet dataset [here](https://image-net.org/). Then organize your folder like this:
+```
+- /data/imagenet/train
+    |- class1
+        |- image1.png
+        |- image2.png
+        |- ...
+    |- ...
+    |- class1000
+
+- /data/imagenet/val
+    |- class1
+        |- image1.png
+        |- image2.png
+        |- ...
+    |- ...
+    |- class1000
+```
+* RUA search:
+```
+cd resnet50_imagenet/rua
+fastestimator run resnet50_imagenet_rua.py --data_dir /data/imagenet
+```
+* After finding optimal augmentation level:
+```
+cd  wrn282_svhn/final
+fastestimator train wrn282_svhn_final.py --data_dir /data/imagenet
 ```
