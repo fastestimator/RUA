@@ -1,4 +1,4 @@
-import math
+import os
 import random
 import tempfile
 
@@ -11,11 +11,12 @@ from PIL import Image, ImageEnhance, ImageOps, ImageTransform
 import fastestimator as fe
 from fastestimator.dataset.data.svhn_cropped import load_data
 from fastestimator.op.numpyop import NumpyOp
-from fastestimator.op.numpyop.meta import OneOf
-from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout, ReadImage
+from fastestimator.op.numpyop.meta import OneOf, Sometimes
+from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
 from fastestimator.schedule import cosine_decay
+from fastestimator.search import GoldenSection
 from fastestimator.trace.adapt import LRScheduler
 from fastestimator.trace.io import BestModelSaver, RestoreWizard
 from fastestimator.trace.metric import Accuracy
@@ -289,7 +290,12 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
-def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200, restore_dir=tempfile.mkdtemp()):
+def get_N(level, N_max, N_min=1):
+    N = level * (N_max - N_min) / 30 + N_min
+    return int(N), N % 1
+
+
+def get_estimator(level=24, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
     print("trying level {}".format(level))
     train_ds, test_ds = load_data()
     aug_options = [
@@ -308,13 +314,15 @@ def get_estimator(level, save_dir=tempfile.mkdtemp(), batch_size=128, epochs=200
         TranslateX(level=level, inputs="x", outputs="x", mode="train"),
         TranslateY(level=level, inputs="x", outputs="x", mode="train")
     ]
-    max_N = min(5, len(aug_options))
-    N = min(max_N, math.ceil(level / 30 * max_N))
+    N_guarantee, N_p = get_N(level, N_max=min(len(aug_options), 5))
+    rua_ops = [OneOf(*aug_options) for _ in range(N_guarantee)]
+    if N_p > 0:
+        rua_ops.append(Sometimes(OneOf(*aug_options), prob=N_p))
     pipeline = fe.Pipeline(
         train_data=train_ds,
         eval_data=test_ds,
         batch_size=batch_size,
-        ops=[OneOf(*aug_options) for _ in range(N)] + [
+        ops=rua_ops + [
             Scale(inputs="x", outputs="x"),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")

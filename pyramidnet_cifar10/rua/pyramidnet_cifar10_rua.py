@@ -1,14 +1,17 @@
 import math
+import os
 import random
 import tempfile
 
-import fastestimator as fe
 import numpy as np
-import tensorflow as tf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from fastestimator.dataset.data.cifar10 import load_data
+from PIL import Image, ImageEnhance, ImageOps, ImageTransform
+from torch.autograd import Variable
+
+import fastestimator as fe
+from fastestimator.dataset.data import cifar10
 from fastestimator.op.numpyop import NumpyOp
 from fastestimator.op.numpyop.meta import OneOf, Sometimes
 from fastestimator.op.numpyop.multivariate import HorizontalFlip, PadIfNeeded, RandomCrop
@@ -16,12 +19,10 @@ from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout,
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
 from fastestimator.schedule import cosine_decay
+from fastestimator.search import GoldenSection
 from fastestimator.trace.adapt import LRScheduler
 from fastestimator.trace.io import BestModelSaver, RestoreWizard
 from fastestimator.trace.metric import Accuracy
-from PIL import Image, ImageEnhance, ImageOps, ImageTransform
-from sklearn.model_selection import train_test_split
-from torch.autograd import Variable
 
 
 class ShakeDropFunction(torch.autograd.Function):
@@ -318,13 +319,16 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
+def get_N(level, N_max, N_min=1):
+    N = level * (N_max - N_min) / 30 + N_min
+    return int(N), N % 1
+
+
 def get_estimator(level, epochs=900, batch_size=128, save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
     print("trying level {}".format(level))
     # step 1: prepare dataset
-    (x_train, y_train), (_, _) = tf.keras.datasets.cifar10.load_data()
-    x_train, x_eval, y_train, y_eval = train_test_split(x_train, y_train, test_size=0.1, random_state=24, stratify=y_train)
-    train_data = fe.dataset.NumpyDataset({"x": x_train, "y": y_train})
-    eval_data = fe.dataset.NumpyDataset({"x": x_eval, "y": y_eval})
+    train_data, _ = cifar10.load_data()
+    eval_data = train_data.split(0.1, seed=42)
     aug_options = [
         Rotate(level=level, inputs="x", outputs="x", mode="train"),
         Identity(level=level, inputs="x", outputs="x", mode="train"),
@@ -341,8 +345,10 @@ def get_estimator(level, epochs=900, batch_size=128, save_dir=tempfile.mkdtemp()
         TranslateX(level=level, inputs="x", outputs="x", mode="train"),
         TranslateY(level=level, inputs="x", outputs="x", mode="train")
     ]
-    max_N = min(5, len(aug_options))
-    N = min(max_N, math.ceil(level / 30 * max_N))
+    N_guarantee, N_p = get_N(level, N_max=min(len(aug_options), 5))
+    rua_ops = [OneOf(*aug_options) for _ in range(N_guarantee)]
+    if N_p > 0:
+        rua_ops.append(Sometimes(OneOf(*aug_options), prob=N_p))
     pipeline = fe.Pipeline(
         train_data=train_data,
         eval_data=eval_data,
@@ -351,7 +357,7 @@ def get_estimator(level, epochs=900, batch_size=128, save_dir=tempfile.mkdtemp()
             PadIfNeeded(min_height=40, min_width=40, image_in="x", image_out="x", mode="train"),
             RandomCrop(32, 32, image_in="x", image_out="x", mode="train"),
             Sometimes(HorizontalFlip(image_in="x", image_out="x", mode="train"))
-        ] + [OneOf(*aug_options) for _ in range(N)] + [
+        ] + rua_ops + [
             Normalize(inputs="x", outputs="x", mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616)),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")
@@ -378,51 +384,22 @@ def get_estimator(level, epochs=900, batch_size=128, save_dir=tempfile.mkdtemp()
     return estimator
 
 
-def evaluate_result(level, epochs=900):
-    est = get_estimator(level=level, epochs=epochs)
-    hist = est.fit(summary="exp")
-    best_acc = float(hist.history["eval"]["max_accuracy"][epochs * 352])
+def score_fn(search_idx, level, save_dir, restore_dir):
+    est = get_estimator(level=level,
+                        save_dir=os.path.join(save_dir, str(search_idx)),
+                        restore_dir=os.path.join(restore_dir, str(search_idx)))
+    hist = est.fit(summary="exp", warmup=False)
+    best_acc = float(max(hist.history["eval"]["max_accuracy"].values()))
+    print("Evaluated level {}, results:{}".format(level, best_acc))
     return best_acc
 
 
-def gss(a, b, total_trial=10):
-    results = {}
-    h = b - a
-    invphi = (math.sqrt(5) - 1) / 2
-    invphi2 = (3 - math.sqrt(5)) / 2
-    c = int(a + invphi2 * h)
-    d = int(a + invphi * h)
-    yc = evaluate_result(level=c)
-    results[c] = yc
-    yd = evaluate_result(level=d)
-    results[d] = yd
-    for i in range(total_trial - 2):
-        if yc > yd:
-            b = d
-            d = c
-            yd = yc
-            h = invphi * h
-            c = int(a + invphi2 * h)
-            if c in results:
-                yc = results[c]
-            else:
-                yc = evaluate_result(level=c)
-                results[c] = yc
-        else:
-            a = c
-            c = d
-            yc = yd
-            h = invphi * h
-            d = int(a + invphi * h)
-            if d in results:
-                yd = results[d]
-            else:
-                yd = evaluate_result(level=d)
-                results[d] = yd
-    max_value_keys = [key for key in results.keys() if results[key] == max(results.values())]
-    return max_value_keys[0], results[max_value_keys[0]]
-
-
-if __name__ == "__main__":
-    best_level, best_acc = gss(a=1, b=30, total_trial=7)
-    print("best level is {}, best accuracy is {}".format(best_level, best_acc))
+def fastestimator_run(save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
+    score_fn_in_use = lambda search_idx, level: score_fn(search_idx, level, save_dir=save_dir, restore_dir=restore_dir)
+    gss = GoldenSection(score_fn=score_fn_in_use, x_min=1, x_max=30, max_iter=5)
+    gss.fit(save_dir=restore_dir)
+    print("search history:")
+    print(gss.get_search_results())
+    print("=======================")
+    print("best result:")
+    print(gss.get_best_results())

@@ -3,106 +3,63 @@ import random
 import tempfile
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import tensorflow as tf
 from PIL import Image, ImageEnhance, ImageOps, ImageTransform
+from tensorflow.keras import layers
 
 import fastestimator as fe
 from fastestimator.dataset.data import cifar10
 from fastestimator.op.numpyop import NumpyOp
-from fastestimator.op.numpyop.meta import OneOf, Sometimes
-from fastestimator.op.numpyop.multivariate import HorizontalFlip, PadIfNeeded, RandomCrop
-from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout, Normalize
+from fastestimator.op.numpyop.meta import OneOf
+from fastestimator.op.numpyop.univariate import Normalize
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
-from fastestimator.schedule import cosine_decay
-from fastestimator.search import GoldenSection
-from fastestimator.trace.adapt import LRScheduler
-from fastestimator.trace.io import BestModelSaver, RestoreWizard
+from fastestimator.search import GridSearch
+from fastestimator.trace.io import RestoreWizard
 from fastestimator.trace.metric import Accuracy
 
 
-class BasicBlock(nn.Module):
-    def __init__(self, in_planes, out_planes, stride, dropRate=0.0):
-        super(BasicBlock, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_planes)
-        self.relu2 = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.droprate = dropRate
-        self.equalInOut = (in_planes == out_planes)
-        self.convShortcut = (not self.equalInOut) and nn.Conv2d(
-            in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False) or None
-
-    def forward(self, x):
-        if not self.equalInOut:
-            x = self.relu1(self.bn1(x))
-        else:
-            out = self.relu1(self.bn1(x))
-        out = self.relu2(self.bn2(self.conv1(out if self.equalInOut else x)))
-        if self.droprate > 0:
-            out = F.dropout(out, p=self.droprate, training=self.training)
-        out = self.conv2(out)
-        return torch.add(x if self.equalInOut else self.convShortcut(x), out)
+def residual(x, num_channel):
+    x = layers.Conv2D(num_channel, 3, padding='same')(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    x = layers.Conv2D(num_channel, 3, padding='same')(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    return x
 
 
-class NetworkBlock(nn.Module):
-    def __init__(self, nb_layers, in_planes, out_planes, block, stride, dropRate=0.0):
-        super(NetworkBlock, self).__init__()
-        self.layer = self._make_layer(block, in_planes, out_planes, nb_layers, stride, dropRate)
+def my_model():
+    # prep layers
+    inp = layers.Input(shape=(32, 32, 3))
+    x = layers.Conv2D(64, 3, padding='same')(inp)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    # layer1
+    x = layers.Conv2D(128, 3, padding='same')(x)
+    x = layers.MaxPool2D()(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    x = layers.Add()([x, residual(x, 128)])
+    # layer2
+    x = layers.Conv2D(256, 3, padding='same')(x)
+    x = layers.MaxPool2D()(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    # layer3
+    x = layers.Conv2D(512, 3, padding='same')(x)
+    x = layers.MaxPool2D()(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
+    x = layers.Add()([x, residual(x, 512)])
+    # layers4
+    x = layers.GlobalMaxPool2D()(x)
+    x = layers.Flatten()(x)
+    x = layers.Dense(10)(x)
+    x = layers.Activation('softmax', dtype='float32')(x)
+    model = tf.keras.Model(inputs=inp, outputs=x)
 
-    def _make_layer(self, block, in_planes, out_planes, nb_layers, stride, dropRate):
-        layers = []
-        for i in range(int(nb_layers)):
-            layers.append(block(i == 0 and in_planes or out_planes, out_planes, i == 0 and stride or 1, dropRate))
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.layer(x)
-
-
-class WideResNet(nn.Module):
-    def __init__(self, depth, num_classes, widen_factor=1, dropRate=0.0):
-        super(WideResNet, self).__init__()
-        nChannels = [16, 16 * widen_factor, 32 * widen_factor, 64 * widen_factor]
-        assert ((depth - 4) % 6 == 0)
-        n = (depth - 4) / 6
-        block = BasicBlock
-        # 1st conv before any network block
-        self.conv1 = nn.Conv2d(3, nChannels[0], kernel_size=3, stride=1, padding=1, bias=False)
-        # 1st block
-        self.block1 = NetworkBlock(n, nChannels[0], nChannels[1], block, 1, dropRate)
-        # 2nd block
-        self.block2 = NetworkBlock(n, nChannels[1], nChannels[2], block, 2, dropRate)
-        # 3rd block
-        self.block3 = NetworkBlock(n, nChannels[2], nChannels[3], block, 2, dropRate)
-        # global average pooling and classifier
-        self.bn1 = nn.BatchNorm2d(nChannels[3])
-        self.relu = nn.ReLU(inplace=True)
-        self.fc = nn.Linear(nChannels[3], num_classes)
-        self.nChannels = nChannels[3]
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.bias.data.zero_()
-
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.block1(out)
-        out = self.block2(out)
-        out = self.block3(out)
-        out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 8, 1)
-        out = out.view(-1, self.nChannels)
-        return self.fc(out)
+    return model
 
 
 class Rotate(NumpyOp):
@@ -285,83 +242,61 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
-def get_N(level, N_max, N_min=1):
-    N = level * (N_max - N_min) / 30 + N_min
-    return int(N), N % 1
-
-
-def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
-    print("trying level {}".format(level))
+def get_estimator(N, M, epochs=100, batch_size=128, restore_dir=tempfile.mkdtemp()):
+    print("trying N:{}, M: {}".format(N, M))
     # step 1: prepare dataset
-    train_data, _ = cifar10.load_data()
-    eval_data = train_data.split(0.1, seed=42)
+    train_data, test_data = cifar10.load_data()
     aug_options = [
-        Rotate(level=level, inputs="x", outputs="x", mode="train"),
-        Identity(level=level, inputs="x", outputs="x", mode="train"),
-        AutoContrast(level=level, inputs="x", outputs="x", mode="train"),
-        Equalize(level=level, inputs="x", outputs="x", mode="train"),
-        Posterize(level=level, inputs="x", outputs="x", mode="train"),
-        Solarize(level=level, inputs="x", outputs="x", mode="train"),
-        Sharpness(level=level, inputs="x", outputs="x", mode="train"),
-        Contrast(level=level, inputs="x", outputs="x", mode="train"),
-        Color(level=level, inputs="x", outputs="x", mode="train"),
-        Brightness(level=level, inputs="x", outputs="x", mode="train"),
-        ShearX(level=level, inputs="x", outputs="x", mode="train"),
-        ShearY(level=level, inputs="x", outputs="x", mode="train"),
-        TranslateX(level=level, inputs="x", outputs="x", mode="train"),
-        TranslateY(level=level, inputs="x", outputs="x", mode="train")
+        Rotate(level=M, inputs="x", outputs="x", mode="train"),
+        Identity(level=M, inputs="x", outputs="x", mode="train"),
+        AutoContrast(level=M, inputs="x", outputs="x", mode="train"),
+        Equalize(level=M, inputs="x", outputs="x", mode="train"),
+        Posterize(level=M, inputs="x", outputs="x", mode="train"),
+        Solarize(level=M, inputs="x", outputs="x", mode="train"),
+        Sharpness(level=M, inputs="x", outputs="x", mode="train"),
+        Contrast(level=M, inputs="x", outputs="x", mode="train"),
+        Color(level=M, inputs="x", outputs="x", mode="train"),
+        Brightness(level=M, inputs="x", outputs="x", mode="train"),
+        ShearX(level=M, inputs="x", outputs="x", mode="train"),
+        ShearY(level=M, inputs="x", outputs="x", mode="train"),
+        TranslateX(level=M, inputs="x", outputs="x", mode="train"),
+        TranslateY(level=M, inputs="x", outputs="x", mode="train")
     ]
-    N_guarantee, N_p = get_N(level, N_max=min(len(aug_options), 5))
-    rua_ops = [OneOf(*aug_options) for _ in range(N_guarantee)]
-    if N_p > 0:
-        rua_ops.append(Sometimes(OneOf(*aug_options), prob=N_p))
+    rua_ops = [OneOf(*aug_options) for _ in range(N)]
     pipeline = fe.Pipeline(
         train_data=train_data,
-        eval_data=eval_data,
+        test_data=test_data,
         batch_size=batch_size,
-        ops=[
-            PadIfNeeded(min_height=40, min_width=40, image_in="x", image_out="x", mode="train"),
-            RandomCrop(32, 32, image_in="x", image_out="x", mode="train"),
-            Sometimes(HorizontalFlip(image_in="x", image_out="x", mode="train"))
-        ] + rua_ops + [
-            Normalize(inputs="x", outputs="x", mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616)),
-            CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
-            ChannelTranspose(inputs="x", outputs="x")
-        ])
+        ops=rua_ops + [Normalize(inputs="x", outputs="x", mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616))])
     # step 2: prepare network
-    model = fe.build(model_fn=lambda: WideResNet(depth=28, num_classes=10, widen_factor=10),
-                     optimizer_fn=lambda x: torch.optim.SGD(x, lr=0.1, momentum=0.9, weight_decay=0.0005))
-
+    model = fe.build(model_fn=my_model, optimizer_fn="adam")
     network = fe.Network(ops=[
         ModelOp(model=model, inputs="x", outputs="y_pred"),
-        CrossEntropy(inputs=("y_pred", "y"), outputs="ce", from_logits=True),
+        CrossEntropy(inputs=("y_pred", "y"), outputs="ce"),
         UpdateOp(model=model, loss_name="ce")
     ])
-
     # step 3 prepare estimator
-    traces = [
-        Accuracy(true_key="y", pred_key="y_pred"),
-        LRScheduler(model=model, lr_fn=lambda epoch: cosine_decay(epoch, cycle_length=epochs, init_lr=0.1)),
-        BestModelSaver(model=model, save_dir=save_dir, metric="accuracy", save_best_mode="max"),
-        RestoreWizard(directory=restore_dir)
-    ]
+    traces = [Accuracy(true_key="y", pred_key="y_pred"), RestoreWizard(directory=restore_dir)]
     estimator = fe.Estimator(pipeline=pipeline, network=network, epochs=epochs, traces=traces)
     return estimator
 
 
-def score_fn(search_idx, level, save_dir, restore_dir):
-    est = get_estimator(level=level,
-                        save_dir=os.path.join(save_dir, str(search_idx)),
-                        restore_dir=os.path.join(restore_dir, str(search_idx)))
-    hist = est.fit(summary="exp", warmup=False)
-    best_acc = float(max(hist.history["eval"]["max_accuracy"].values()))
-    print("Evaluated level {}, results:{}".format(level, best_acc))
+def score_fn(search_idx, N, M, restore_dir):
+    est = get_estimator(N=N, M=M, restore_dir=os.path.join(restore_dir, str(search_idx)))
+    est.fit(warmup=False)
+    hist = est.test(summary="exp")
+    best_acc = float(max(hist.history["test"]["accuracy"].values()))
+    print("Evaluated N:{} M:{}, results:{}".format(N, M, best_acc))
     return best_acc
 
 
-def fastestimator_run(save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
-    score_fn_in_use = lambda search_idx, level: score_fn(search_idx, level, save_dir=save_dir, restore_dir=restore_dir)
-    gss = GoldenSection(score_fn=score_fn_in_use, x_min=1, x_max=30, max_iter=5)
+def fastestimator_run(restore_dir=tempfile.mkdtemp()):
+    restore_dir = os.path.join(restore_dir, "cifar10")
+    score_fn_in_use = lambda search_idx, N, M: score_fn(search_idx, N, M, restore_dir=restore_dir)
+    gss = GridSearch(score_fn=score_fn_in_use,
+                     params={
+                         "N": [x + 1 for x in range(10)], "M": [3 * (x + 1) for x in range(10)]
+                     })
     gss.fit(save_dir=restore_dir)
     print("search history:")
     print(gss.get_search_results())

@@ -1,14 +1,15 @@
-import math
 import os
 import random
 import tempfile
 
-import fastestimator as fe
 import numpy as np
-import tensorflow as tf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image, ImageEnhance, ImageOps, ImageTransform
+
+import fastestimator as fe
+from fastestimator.dataset.data import cifar100
 from fastestimator.op.numpyop import NumpyOp
 from fastestimator.op.numpyop.meta import OneOf, Sometimes
 from fastestimator.op.numpyop.multivariate import HorizontalFlip, PadIfNeeded, RandomCrop
@@ -16,11 +17,10 @@ from fastestimator.op.numpyop.univariate import ChannelTranspose, CoarseDropout,
 from fastestimator.op.tensorop.loss import CrossEntropy
 from fastestimator.op.tensorop.model import ModelOp, UpdateOp
 from fastestimator.schedule import cosine_decay
+from fastestimator.search import GoldenSection
 from fastestimator.trace.adapt import LRScheduler
 from fastestimator.trace.io import BestModelSaver, RestoreWizard
 from fastestimator.trace.metric import Accuracy
-from PIL import Image, ImageEnhance, ImageOps, ImageTransform
-from sklearn.model_selection import train_test_split
 
 
 class BasicBlock(nn.Module):
@@ -285,12 +285,15 @@ class TranslateY(NumpyOp):
         return np.copy(np.asarray(im))
 
 
-def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
+def get_N(level, N_max, N_min=1):
+    N = level * (N_max - N_min) / 30 + N_min
+    return int(N), N % 1
+
+
+def get_estimator(level=22, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp(), restore_dir=tempfile.mkdtemp()):
     print("trying level {}".format(level))
     # step 1: prepare dataset
-    (x_train, y_train), (x_eval, y_eval) = tf.keras.datasets.cifar100.load_data()
-    train_data = fe.dataset.NumpyDataset({"x": x_train, "y": y_train})
-    eval_data = fe.dataset.NumpyDataset({"x": x_eval, "y": y_eval})
+    train_data, eval_data = cifar100.load_data()
     aug_options = [
         Rotate(level=level, inputs="x", outputs="x", mode="train"),
         Identity(level=level, inputs="x", outputs="x", mode="train"),
@@ -307,8 +310,10 @@ def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()
         TranslateX(level=level, inputs="x", outputs="x", mode="train"),
         TranslateY(level=level, inputs="x", outputs="x", mode="train")
     ]
-    max_N = min(5, len(aug_options))
-    N = min(max_N, math.ceil(level / 30 * max_N))
+    N_guarantee, N_p = get_N(level, N_max=min(len(aug_options), 5))
+    rua_ops = [OneOf(*aug_options) for _ in range(N_guarantee)]
+    if N_p > 0:
+        rua_ops.append(Sometimes(OneOf(*aug_options), prob=N_p))
     pipeline = fe.Pipeline(
         train_data=train_data,
         eval_data=eval_data,
@@ -317,12 +322,11 @@ def get_estimator(level, epochs=200, batch_size=128, save_dir=tempfile.mkdtemp()
             PadIfNeeded(min_height=40, min_width=40, image_in="x", image_out="x", mode="train"),
             RandomCrop(32, 32, image_in="x", image_out="x", mode="train"),
             Sometimes(HorizontalFlip(image_in="x", image_out="x", mode="train"))
-        ] + [OneOf(*aug_options) for _ in range(N)] + [
+        ] + rua_ops + [
             Normalize(inputs="x", outputs="x", mean=(0.4914, 0.4822, 0.4465), std=(0.2471, 0.2435, 0.2616)),
             CoarseDropout(inputs="x", outputs="x", mode="train", max_holes=1),
             ChannelTranspose(inputs="x", outputs="x")
         ])
-
     # step 2: prepare network
     model = fe.build(model_fn=lambda: WideResNet(depth=28, num_classes=100, widen_factor=10),
                      optimizer_fn=lambda x: torch.optim.SGD(x, lr=0.1, momentum=0.9, weight_decay=0.0005))
